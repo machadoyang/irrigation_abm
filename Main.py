@@ -16,6 +16,8 @@ import pandas as pd
 import scipy.stats as ss
 import random
 
+from colorama import Fore
+
 import data_preparation
 
 class FarmerAgent(Agent):
@@ -26,16 +28,25 @@ class FarmerAgent(Agent):
         FarmerAgent._last_id += 1
         self.type = 'farmer'
         self.poverr = 0.3  # Probability of override
-        self.pcrop = [0.55, 0.4, 0.05]  # Proabability of crop choice
+        self.pcrop = [0.6, 0.2, 0.2]  # Proabability of crop choice
+        self.harvest_efficiency = 0 # Amount of harvest based on chosen crop in ton/ha
+        self.crop_yield_per_ton = 0 # Chosen crop yield per ton in R$/ton
         self.cropChoice = None
-        self.area = 50 # in hectares
-        self.water_rights_quantity = 0
+        self.area = 0
+        self.amount_of_water_asked = 0
+        self.amount_of_water_received = 0
+        self.yearly_expected_yield = 0
+        self.total_yearly_yield = 0
         self.water_rights_lognorm_fit = data_preparation.fit_water_rights()
         self.life_time = 0 # water right life time in years
         
-    def cropsselection(self):
-        list_of_crops = ['Rice', 'Maize', 'Soya']
-        self.cropChoice = np.random.choice(list_of_crops, 1, p = self.pcrop)
+    def crops_selection(self):
+        # print(crops_info[crops_info.index.isin(['efficiency'])])
+        self.cropChoice = np.random.choice(crops_info.columns.values, 1, p = self.pcrop)[0]
+        
+    def expected_annual_yield(self):
+        # Crop yield per ton in R$/ton and efficiency in ton/ha
+        self.yearly_expected_yield = self.area * crops_info.loc['efficiency'][self.cropChoice] * crops_info.loc['yield_per_ton'][self.cropChoice]
         
     def water_right_random(self):
         ss.lognorm.rvs(loc=self.water_rights_lognorm_fit['loc'], scale=self.water_rights_lognorm_fit['scale'])
@@ -56,12 +67,13 @@ class FarmerAgent(Agent):
                     
         # list_of_contents = self.model.grid.get_cell_list_contents(neighbors_nodes).cropChoice
         # print(list_of_contents)
+        
+    def define_initial_area(self):
+        monthly_amount_of_water_based_on_data = ss.lognorm.rvs(s=self.water_rights_lognorm_fit['shape'], loc=self.water_rights_lognorm_fit['loc'], scale=self.water_rights_lognorm_fit['scale'])
+        self.area = monthly_amount_of_water_based_on_data/(40*30)
     
-    def ask_water(self):
-        # self.amount_water = self.area*10 # value in m3/s
-        self.amount_water = ss.lognorm.rvs(s=self.water_rights_lognorm_fit['shape'], loc=self.water_rights_lognorm_fit['loc'], scale=self.water_rights_lognorm_fit['scale'])*12 # Estimate monthly amount of water and multiply by 12 to get yearly value
-        print("Farmer asked water")
-        print(self.amount_water)
+    def calculate_amount_of_water_to_ask(self):
+        self.amount_of_water_asked = self.area*40*30*12 # Area times 40 m³/ha/day times 30 days and 12 months to get yearly value
         
     def demandwater(self):
         pass
@@ -79,12 +91,14 @@ class FarmerAgent(Agent):
 
     def step(self):
         if (self.life_time == 0):
-            self.cropsselection()
+            self.define_initial_area()
+            self.crops_selection()
         self.inactivate(model, 0.05)
-        self.ask_water()
-        self.life_time += 1 # Increase 1 year in water right lite time
-        print ("Hi, I am farmer n. " + str(self.unique_id) + " and chose to plant " + str(self.cropChoice[0]) + "." + " It has passed " + str(self.life_time) + " years.")
-        # print(self.model.annual_flow_discharge)
+        self.calculate_amount_of_water_to_ask()
+        
+        self.expected_annual_yield()
+        print("Hi, I am farmer n. {} and chose to plant {}. I have asked {:.2f} m³/year. It has passed {} since I created my farm.".format(self.unique_id, self.cropChoice, self.amount_of_water_asked, self.life_time))
+        
         # self.check_neighbours()
         # a = model.grid.get_neighbors(self.pos, include_center=False)
         # print ("My neighboor cells are: " + self.neighbors_nodes)
@@ -97,35 +111,22 @@ class ManagerAgent(Agent):
 
     # Allocates water based on the agent id (upstream comes first)
     def allocate_water_fcfs(self):
-        print("Manager is concieving water rights on the basis of first come first served.")
-        farmers_contents = self.model.grid.get_all_cell_contents()
+        print("Manager is conceiving water rights on the basis of first come first served.")
+        agents_contents = self.model.grid.get_all_cell_contents()
         print("---")
-        print(farmers_contents)
-        for farmer in farmers_contents:
-            if farmer.type == 'farmer':
-                farmer_section = model.G.nodes[farmer.pos]["section"] # get section information where farmer is positioned
-                print(model.available_water_per_section[str(farmer_section)])
-                if model.available_water_per_section[str(farmer_section)] >= farmer.amount_water:
-                    # Concieve water right and deduct from available water per section
-                    farmer.water_rights_quantity = farmer.amount_water
-                    model.available_water_per_section[str(farmer_section)] -= farmer.amount_water
-                    print("Farmer n. " + str(farmer.unique_id) + " received " + str(farmer.water_rights_quantity) + " m³/year")
+        for agent in agents_contents:
+            if (agent.type == 'farmer' and agent.life_time == 0):
+                farmer_section = model.G.nodes[agent.pos]["section"] # get section information where farmer is positioned
+                # print(model.available_water_per_section[str(farmer_section)])
+                if model.available_water_per_section[str(farmer_section)] >= agent.amount_of_water_asked:
+                    # Conceive water right and deduct from available water per section
+                    agent.amount_of_water_received = agent.amount_of_water_asked
+                    model.available_water_per_section[str(farmer_section)] -= agent.amount_of_water_asked
+                    print("Farmer n. " + str(agent.unique_id) + " received " + str(agent.amount_of_water_received) + " m³/year")
                     print ("Remaining water available on section " + str(farmer_section) + " is " + str(model.available_water_per_section[str(farmer_section)]))
                 else:
-                    print ("Water request denied to farmer " + str(farmer.unique_id))
-                    print("There is no available water at section " + str(farmer_section))
-        #             # Concieve water rights
-        #             cell.water_rights_quantity = cell.amount_water
-        #             print("Farmer n. " + str(cell.unique_id) + " received " + str(cell.water_rights_quantity) + " m³/year.")
-        #             # Deduct water quantity from total
-        #             model.available_water_to_distribute -= cell.amount_water
-        #         elif model.available_water_to_distribute == 0:
-        #             cell.water_rights_quantity = 0
-        #             print("Querido farmer n. " + str(cell.unique_id) + ". Vai ficar sem esse ano, lindeza. Bjs de luz")
-        #         else:
-        #             cell.water_rights_quantity = model.available_water_to_distribute
-        #             print("Farmer n. " + str(cell.unique_id) + " recieved " + str(cell.water_rights_quantity) + " m³/year.")
-        #             model.available_water_to_distribute = 0
+                    print (Fore.RED + "Water request denied to farmer {}. There is no available water at section {}.". format(agent.unique_id, farmer_section))
+            agent.life_time += 1 # Increase 1 year in water right lite time
                 
     def step(self):
         self.allocate_water_fcfs()
@@ -145,7 +146,8 @@ class IrrigationModel(Model):
             hydro_stats,
             crop_characteristics,
             water_rights_gamma_fit,
-            available_water_per_section):
+            available_water_per_section,
+            crops_info):
         # self.schedule = StagedActivation(self)
         self.schedule = AgentTypeScheduler(IrrigationModel, [FarmerAgent, ManagerAgent])
         
@@ -309,10 +311,10 @@ Povr = 0.3 # Prob of override
 
 hydro_stats = pd.Series({'mu_x': 3191, 'sigma_x': 725.95, 'mu_y': 130, 'sigma_y': 30.82, 'rho': 0.98})
 crop_characteristics = pd.DataFrame.from_dict({'rice': [2, 0.55, 30, 16.5], 'maize': [1, 0.5, 20, 10], 'soya': [0.8, 1.25, 6, 7.5]}, columns=['cost', 'return', 'maxYield', 'maxProfit'], orient='index')
-
+crops_info = pd.read_excel('crops_info.xlsx', index_col=0)
 "Run model"
 water_rights_gamma_fit = data_preparation.read_water_rights()
-model = IrrigationModel(linear_graph, hydro_stats, crop_characteristics, water_rights_gamma_fit, available_water_per_section)
+model = IrrigationModel(linear_graph, hydro_stats, crop_characteristics, water_rights_gamma_fit, available_water_per_section, crops_info)
 model.run_model()
 # test = model.datacollector.get_agent_vars_dataframe()
 # steps = 11
