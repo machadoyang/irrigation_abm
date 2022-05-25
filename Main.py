@@ -5,7 +5,6 @@
 
 from mesa import Agent, Model
 from mesa.time import StagedActivation
-import networkx as nx
 from mesa.space import NetworkGrid
 from mesa.datacollection import DataCollector
 from scheduler import AgentTypeScheduler
@@ -143,8 +142,6 @@ class IrrigationModel(Model):
     def __init__(
             self,
             linear_graph,
-            hydro_stats,
-            crop_characteristics,
             water_rights_gamma_fit,
             available_water_per_section,
             crops_info):
@@ -163,7 +160,6 @@ class IrrigationModel(Model):
         # Set parameters
         self.G = linear_graph
         self.grid = NetworkGrid(self.G)
-        self.hydro_stats = hydro_stats
         self.water_rights_gamma_fit = water_rights_gamma_fit
         self.available_water_per_section = available_water_per_section
         
@@ -180,8 +176,16 @@ class IrrigationModel(Model):
             self.schedule.add(m)
         
         create_manager(self)
-        # self.datacollector = DataCollector(
-        # agent_reporters={"testvar": lambda f: f.cropChoice(FarmerAgent)})
+        self.datacollector = DataCollector(
+            # model_reporters={"Available Water Per Section": available_water_per_section},
+            agent_reporters={
+                "Total yearly yield": lambda x: x.total_yearly_yield if x.type == 'farmer' else None,
+                "Amount of water asked": lambda x: x.amount_of_water_asked if x.type == 'farmer' else None,
+                }
+        )
+        
+        self.datacollector.collect(self)
+        
         # Create farmer agents and position them randomly
     def create_farmers_random_position(self):
         """
@@ -212,18 +216,6 @@ class IrrigationModel(Model):
         #     self.schedule.add(f)
         #     self.grid.place_agent(f, node)
         
-    # def generate_annual_hydro_data(self):
-    #     z1 = np.random.normal() # independent random variable with the standard normal distribution (flow discharge)
-    #     z2 = np.random.normal() # independent random variable with the standard normal distribution (rainfall)
-    #     self.annual_flow_discharge = self.hydro_stats.mu_x + self.hydro_stats.sigma_x*z1
-    #     self.annual_rainfall = self.hydro_stats.mu_y + self.hydro_stats.sigma_y*(z1*self.hydro_stats.rho + z2*np.sqrt(1-self.hydro_stats.rho**2))
-    #     self.available_water_to_distribute = self.annual_flow_discharge
-    #     print("In this year, annual flow discharge is " + str(self.annual_flow_discharge) + " m³/year and annual total rainfall is " + str(self.annual_rainfall) + " mm/year.")
-    #     # print(self.annual_flow_discharge)
-    #     # print(self.annual_rainfall)
-        
-        # annual_flow_discharge = self.mu_x + sigma_x*
-        
     def generate_annual_water_availability_canal(self):
         self.annual_flow_discharge = 252000*365 # m³/day multiplied by number of days
         self.percentage_to_distribute = 0.2
@@ -232,17 +224,13 @@ class IrrigationModel(Model):
             
     def step(self):
         """ Execute the step of all the agents, one at a time. At the end advance model by one step """
-        # self.datacollector.collect(self)
+        self.datacollector.collect(self)
         self.create_farmers_random_position()
         self.generate_annual_water_availability_canal()
         # self.generate_annual_hydro_data()
         self.schedule.step()
         
-    def run_model(self, step_count=2):
-        
-        # if self.verbose:
-            # print("Number of farmers: ", self.schedule.get_breed_count(Wolf))
-            
+    def run_model(self, step_count=3):
         for i in range(step_count):
             print ("-------------- \n" +
                    "Initiating year n. " + str(i) + "\n" +
@@ -250,47 +238,12 @@ class IrrigationModel(Model):
             self.step()
         
 "Generate Linear Graph with NX"
+linear_graph = data_preparation.generate_edges_linear_graph(number_of_sections = 10, number_of_nodes=10)
 
-def get_evenly_divided_values(value_to_be_distributed, times):
-    """
-    Divide a number into (almost) equal whole numbers
-    
-    Args:
-        value_to_be_distributed: number to be divided
-        times: Number of integer values to divide
-    """ 
-    return [value_to_be_distributed // times + int(x < value_to_be_distributed % times) for x in range(times)]
-
-def generate_edges_linear_graph(number_of_sections = 10, number_of_nodes=25):
-    """
-    Create a linear graph with 'section' attribute (almost) evenly spaced
-    according to number of desired number of edges
-    
-    Args:
-        number_of_sections: Number of sections to devide nodes
-        number_of_nodes: Number of nodes (farmers possible positions)
-    """ 
-    
-    n_nodes_per_section = get_evenly_divided_values(number_of_nodes, number_of_sections)
-    sections_list = []
-    for i, v in enumerate(n_nodes_per_section):
-        for j in range(v):
-            sections_list.append(i+1)   
-    sections = {i+1: {'section': v} for i, v in enumerate(sections_list)}
-    edges = []
-    for x in range(1, number_of_nodes):
-        edges.append((x,x+1))
-    linear_graph = nx.Graph()
-    linear_graph.add_edges_from(edges)
-    nx.set_node_attributes(linear_graph, sections)
-    nx.draw_networkx(linear_graph)
-    return linear_graph
-
-linear_graph = generate_edges_linear_graph(number_of_sections = 10, number_of_nodes=10)
-
-"""Sections water availability information"""
-
-available_water_per_section = {
+"Initial conditions"
+Pc = [0.55, 0.4, 0.05] # Crop choice: [rice, maize, soya]
+Povr = 0.3 # Prob of override
+available_water_per_section = { # Sections water availability information
     '1': 100001,
     '2': 100002,
     '3': 100003,
@@ -303,21 +256,10 @@ available_water_per_section = {
     '10': 100010,
     }
 
-"Initial conditions"
-Pc = [0.55, 0.4, 0.05] # Crop choice: [rice, maize, soya]
-Povr = 0.3 # Prob of override
-
-# "Stats properties of the hydrological input conditions"
-
-hydro_stats = pd.Series({'mu_x': 3191, 'sigma_x': 725.95, 'mu_y': 130, 'sigma_y': 30.82, 'rho': 0.98})
-crop_characteristics = pd.DataFrame.from_dict({'rice': [2, 0.55, 30, 16.5], 'maize': [1, 0.5, 20, 10], 'soya': [0.8, 1.25, 6, 7.5]}, columns=['cost', 'return', 'maxYield', 'maxProfit'], orient='index')
+"Read crops information"
 crops_info = pd.read_excel('crops_info.xlsx', index_col=0)
 "Run model"
 water_rights_gamma_fit = data_preparation.read_water_rights()
-model = IrrigationModel(linear_graph, hydro_stats, crop_characteristics, water_rights_gamma_fit, available_water_per_section, crops_info)
+model = IrrigationModel(linear_graph,water_rights_gamma_fit, available_water_per_section, crops_info)
 model.run_model()
-# test = model.datacollector.get_agent_vars_dataframe()
-# steps = 11
-# for i in range(steps):
-#     model.step()
-# agent_state = model.datacollector.get_model_vars_dataframe()
+agents_results = model.datacollector.get_agent_vars_dataframe()
