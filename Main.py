@@ -35,17 +35,19 @@ class FarmerAgent(Agent):
         self.amount_of_water_asked = 0
         self.amount_of_water_received = 0
         self.yearly_expected_yield = 0
-        self.total_yearly_yield = 0
+        self.total_profit = 0
         self.water_rights_lognorm_fit = data_preparation.fit_water_rights()
         self.life_time = 0 # water right life time in years
         
     def crops_selection(self):
-        # print(crops_info[crops_info.index.isin(['efficiency'])])
-        self.cropChoice = np.random.choice(crops_info.columns.values, 1, p = self.pcrop)[0]
+        weights = model.crops_info_year.loc['Revenue (R$/ton)'] - model.crops_info_year.loc['Cost (R$/ton)'] # Calculate weights of choosing a crop based on expected profit
+        probabilities = weights / weights.sum() # Calculates probabilities of choosing a crop
+        self.cropChoice = np.random.choice(crops_info.columns.values, 1, p = probabilities)[0] # Choose crop
+        self.harvest_efficiency = model.crops_info_year.loc['Yield (ton/ha)'][self.cropChoice]
+        self.crop_yield_per_ton = model.crops_info_year.loc['Revenue (R$/ton)'][self.cropChoice]
         
     def expected_annual_yield(self):
-        # Crop yield per ton in R$/ton and efficiency in ton/ha
-        self.yearly_expected_yield = self.area * crops_info.loc['efficiency'][self.cropChoice] * crops_info.loc['yield_per_ton'][self.cropChoice]
+        self.yearly_expected_yield = self.area * self.harvest_efficiency * self.crop_yield_per_ton
         
     def water_right_random(self):
         ss.lognorm.rvs(loc=self.water_rights_lognorm_fit['loc'], scale=self.water_rights_lognorm_fit['scale'])
@@ -123,6 +125,9 @@ class ManagerAgent(Agent):
                     model.available_water_per_section[str(farmer_section)] -= agent.amount_of_water_asked
                     print("Farmer n. " + str(agent.unique_id) + " received " + str(agent.amount_of_water_received) + " m³/year")
                     print ("Remaining water available on section " + str(farmer_section) + " is " + str(model.available_water_per_section[str(farmer_section)]))
+                    
+                    # Calculate agent total yield based on water received
+                    agent.total_profit = 10 * agent.amount_of_water_received/(40*30*12) * agent.harvest_efficiency * agent.crop_yield_per_ton
                 else:
                     print (Fore.RED + "Water request denied to farmer {}. There is no available water at section {}.". format(agent.unique_id, farmer_section))
             agent.life_time += 1 # Increase 1 year in water right lite time
@@ -179,8 +184,12 @@ class IrrigationModel(Model):
         self.datacollector = DataCollector(
             # model_reporters={"Available Water Per Section": available_water_per_section},
             agent_reporters={
-                "Total yearly yield": lambda x: x.total_yearly_yield if x.type == 'farmer' else None,
-                "Amount of water asked": lambda x: x.amount_of_water_asked if x.type == 'farmer' else None,
+                "Type": lambda x: x.type,
+                "Planned crop area (ha)": lambda x: x.area if x.type == 'farmer' else None,
+                "Crop choice": lambda x: x.cropChoice if x.type == 'farmer' else None,
+                "Amount of water asked (m³/year)": lambda x: x.amount_of_water_asked if x.type == 'farmer' else None,
+                "Amount of water received (m³/year)": lambda x: x.amount_of_water_received if x.type == 'farmer' else None,
+                "Total profit (R$)": lambda x: x.total_profit if x.type == 'farmer' else None,
                 }
         )
         
@@ -221,14 +230,18 @@ class IrrigationModel(Model):
         self.percentage_to_distribute = 0.2
         self.available_water_to_distribute = self.percentage_to_distribute*self.annual_flow_discharge #percentage of total available to distribute
         # print("In this year, available annual flow discharge is " + str(self.available_water_to_distribute))
+        
+    def fluctuate_market_for_the_year(self):
+        self.crops_info_year = crops_info.apply(lambda x: np.random.normal(x,0.1*x) if x.name == 'Revenue (R$/ton)' else x, axis=1)
+        self.crops_info_year = self.crops_info_year.apply(lambda x: np.random.normal(x,0.1*x) if x.name == 'Cost (R$/ton)' else x, axis=1)
             
     def step(self):
         """ Execute the step of all the agents, one at a time. At the end advance model by one step """
-        self.datacollector.collect(self)
         self.create_farmers_random_position()
         self.generate_annual_water_availability_canal()
-        # self.generate_annual_hydro_data()
+        self.fluctuate_market_for_the_year()
         self.schedule.step()
+        self.datacollector.collect(self)
         
     def run_model(self, step_count=3):
         for i in range(step_count):
