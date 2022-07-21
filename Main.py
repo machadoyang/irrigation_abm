@@ -109,7 +109,7 @@ class FarmerAgent(Agent):
     def step(self):
         if (self.life_time == 0):
             self.define_initial_area()
-            self.crops_selection()
+        self.crops_selection()
         # self.inactivate(model, 0.05)
         self.calculate_amount_of_water_to_ask()
 
@@ -151,7 +151,7 @@ class ManagerAgent(Agent):
                     if model.verbose == True:
                         print("Farmer n. " + str(agent.unique_id) + " received " +
                               str(agent.amount_of_water_received) + " m³/year")
-                        print("Remaining water available on section " + str(farmer_section) +
+                        print("Remaining virtual water available on section " + str(farmer_section) +
                               " is " + str(model.virtual_water_available_per_section[str(farmer_section)]))
                 else:
                     if model.verbose == True:
@@ -160,9 +160,8 @@ class ManagerAgent(Agent):
 
     def water_withdrawal(self):
         agents_contents = self.model.grid.get_all_cell_contents()
-        # agents_contents.sort(key=lambda x: x.unique_id)
         for agent in agents_contents:
-            if (agent.type == 'farmer' and agent.life_time == 0):
+            if (agent.type == 'farmer'):  # and agent.life_time == 0
                 # print(agent.pos, agent.unique_id)
 
                 # get section information where farmer is positioned
@@ -213,8 +212,10 @@ class IrrigationModel(Model):
         
         Args:
             linear_graph: generated linear graph using networkx
-            hydro_stats: statistics to generate annual hydrological data
-            crop_characteristics: contain cost, return, max yield and max profit for each crop
+            water_rights_gamma_fit: water rights dataset to fit gamma distribution
+            available_water_per_section: dictionary containing amount of water available at each section
+            crops_info: pandas DataFrame containing crops information (revenue, yield and cost)
+            n_farmers_to_create_per_year: int number that represent the number of farmers to create per year
         """
 
         # Set parameters
@@ -225,6 +226,9 @@ class IrrigationModel(Model):
         self.virtual_water_available_per_section = available_water_per_section
         # what is actually available in canal based on water withdrawal (counting water right overrides)
         self.available_water_per_section = available_water_per_section
+
+        self.df_model_variables = pd.DataFrame(
+            columns=['Step', 'Section', 'Water available', 'Virtual Water Available'])
 
         # Create farmer agents and position them in order
         def create_farmers_in_order(self):
@@ -240,9 +244,8 @@ class IrrigationModel(Model):
 
         create_manager(self)
 
-        # Data Collector            
+        # Data Collector
         self.datacollector = DataCollector(
-            # model_reporters={"Available Water Per Section": available_water_per_section},
             agent_reporters={
                 "Type":
                     lambda x: x.type,
@@ -266,7 +269,7 @@ class IrrigationModel(Model):
             model_reporters={
                 "available_water_array": get_water_available_per_section,
                 "virtual_water_array": get_virtual_water_available_per_section,
-                },
+            },
         )
         self.datacollector.collect(self)
 
@@ -299,29 +302,61 @@ class IrrigationModel(Model):
         #     self.grid.place_agent(f, node)
 
     def fluctuate_market_for_the_year(self):
-        self.crops_info_year = crops_info.apply(lambda x: np.random.normal(
-            x, 0.05*x) if x.name == 'Revenue (R$/ton)' else x, axis=1)  # apply random variation on revenue
-        self.crops_info_year = self.crops_info_year.apply(lambda x: np.random.normal(
-            x, 0.05*x) if x.name == 'Cost (R$/ton)' else x, axis=1)  # apply random variation on cost
+        def calculate():
+            self.crops_info_year = crops_info.apply(lambda x: np.random.normal(
+                x, 0.05*x) if x.name == 'Revenue (R$/ton)' else x, axis=1)  # apply random variation on revenue
+            self.crops_info_year = self.crops_info_year.apply(lambda x: np.random.normal(
+                x, 0.05*x) if x.name == 'Cost (R$/ton)' else x, axis=1)  # apply random variation on cost
+        calculate()
+        profit_info_year = self.crops_info_year.loc['Revenue (R$/ton)'] - \
+            self.crops_info_year.loc['Cost (R$/ton)']
+        while (any(profit_info_year < 0)):
+            calculate()
+            
+    def reset_water_available_for_current_year(self):
+        print(self.virtual_water_available_per_section)
+        self.virtual_water_available_per_section = available_water_per_section
+
+    def collect_model_attributes(self):
+        for key in self.virtual_water_available_per_section:
+            self.df_model_variables = self.df_model_variables.append(
+                {
+                    'Step': model.schedule.steps,
+                    'Section': key,
+                    'Water available': self.available_water_per_section[key],
+                    'Virtual Water Available': self.virtual_water_available_per_section[key],
+                },
+                ignore_index=True
+            )
 
     def step(self):
         """ Execute the step of all the agents, one at a time. At the end advance model by one step """
+        # Preparation
+        self.reset_water_available_for_current_year()
         self.create_farmers_random_position()
-        # self.generate_annual_water_availability_canal()
         self.fluctuate_market_for_the_year()
+        
+        # Run step
         self.schedule.step()
+        
+        # Save model variables
         self.datacollector.collect(self)
+        self.collect_model_attributes()
 
-    def run_model(self, step_count=2):
+    def run_model(self, step_count=3):
         for i in range(step_count):
             print("-------------- \n" +
                   "Initiating year n. " + str(i) + "\n" +
                   "--------------")
             self.step()
 
+
 """DataCollector methods"""
+
+
 def get_water_available_per_section(model):
     return model.available_water_per_section
+
 
 def get_virtual_water_available_per_section(model):
     return model.virtual_water_available_per_section
@@ -329,7 +364,7 @@ def get_virtual_water_available_per_section(model):
 
 "Generate Linear Graph with NX"
 linear_graph = data_preparation.generate_edges_linear_graph(
-    number_of_sections=10, number_of_nodes=10)
+    number_of_sections=10, number_of_nodes=15)
 
 "Initial conditions"
 available_water_per_section = {  # Sections water availability information
