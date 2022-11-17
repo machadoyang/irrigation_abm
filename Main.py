@@ -4,18 +4,16 @@
 """
 
 from mesa import Agent, Model
-from mesa.time import StagedActivation
 from mesa.space import NetworkGrid
 from mesa.datacollection import DataCollector
 from scheduler import AgentTypeScheduler
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import scipy.stats as ss
 import random
 
-from colorama import Fore
+from collections import defaultdict
 
 import data_preparation
 
@@ -28,7 +26,6 @@ class FarmerAgent(Agent):
         super().__init__(FarmerAgent._last_id+1, model)
         FarmerAgent._last_id += 1
         self.type = 'farmer'
-        self.poverr = 0.3  # Probability of override
         self.pcrop = [0.6, 0.2, 0.2]  # Proabability of crop choice
         self.harvest_efficiency = 0  # Amount of harvest based on chosen crop in ton/ha
         self.crop_yield_per_ton = 0  # Chosen crop yield per ton in R$/ton
@@ -36,14 +33,16 @@ class FarmerAgent(Agent):
         self.area = 0
         self.amount_of_water_asked = 0
         self.amount_of_water_received = 0
-        # probability to override water right denial
-        self.p_to_override = np.random.beta(a=2, b=5, size=1)
-        self.amout_of_water_withdrawn = 0
+        self.p_to_override = np.random.beta(a=2, b=5, size=1)[
+            0]  # Probability to override
+        self.amount_of_water_withdrawn = 0
         self.yearly_expected_yield = 0
-        self.total_profit = 0
-        self.water_rights_lognorm_fit = data_preparation.fit_water_rights()
+        self.total_revenue = 0
+        self.water_rights_lognorm_fit = model.water_rights_parameters
         self.life_time = 0  # water right life time in years
         self.received_water_right = False
+        self.agent_performed_override = False
+        self.agent_water_scarcity = False
 
     def crops_selection(self):
         # Calculate weights of choosing a crop based on expected profit
@@ -70,18 +69,6 @@ class FarmerAgent(Agent):
         neighbors_nodes = self.model.grid.get_neighbors(self.pos)
         test_neighbours = [
             agent for agent in self.model.grid.get_cell_list_contents(neighbors_nodes)]
-        # print(neighbors_nodes[1])
-
-        # if len(neighbors_nodes) > 1:
-        #     other = self.random.choice(neighbors_nodes)
-        #     return(neighbors_nodes)
-        # other.testvar += 1
-        # self.testvar -=1
-        # for agent in self.model.grid.get_cell_list_contents(neighbors_nodes):
-        #     continue
-
-        # list_of_contents = self.model.grid.get_cell_list_contents(neighbors_nodes).cropChoice
-        # print(list_of_contents)
 
     def define_initial_area(self):
         monthly_amount_of_water_based_on_data = ss.lognorm.rvs(
@@ -92,8 +79,6 @@ class FarmerAgent(Agent):
         # Area times 40 m³/ha/day times 30 days and 12 months to get yearly value
         self.amount_of_water_asked = self.area*40*30*12
 
-    def demandwater(self):
-        pass
 
     def inactivate(self, model, prob=0.05):
         """ Remove an agent given a probability each year
@@ -159,29 +144,53 @@ class ManagerAgent(Agent):
                             agent.unique_id, farmer_section))
 
     def water_withdrawal(self):
+        """
+        Withdraws water from the canal upstream to downstream.
+        To calculate water balance transfer all water to the first section.
+        In a for loop move the remaining water to the next section
+        """
         agents_contents = self.model.grid.get_all_cell_contents()
+    
+        # Group agents by section position
+        grouped_agents = defaultdict(list)
         for agent in agents_contents:
-            if (agent.type == 'farmer'):  # and agent.life_time == 0
-                # print(agent.pos, agent.unique_id)
-
-                # get section information where farmer is positioned
-                farmer_section = model.G.nodes[agent.pos]["section"]
-                if (model.available_water_per_section[str(farmer_section)] >= agent.amount_of_water_asked):
-                    if (agent.received_water_right == True):
-                        agent.amout_of_water_withdrawn = agent.amount_of_water_received
-                        model.available_water_per_section[str(
-                            farmer_section)] -= agent.amount_of_water_received
-                    else:
-                        if (np.random.uniform(0, 1, 1) <= agent.p_to_override):
-                            agent.amout_of_water_withdrawn = agent.amount_of_water_asked
+            grouped_agents[model.G.nodes[agent.pos]["section"]].append(agent)
+        
+        # Transfer all water from first section to first element in grouped_agents.keys()
+        # Algorithm will break otherwise in case no agent allocates itself in section 1 on the first iteration
+        current_list_of_sections = list(grouped_agents.keys())
+        model.available_water_per_section[str(current_list_of_sections[0])] = model.available_water_per_section[str(1)]
+        
+        for section in grouped_agents:
+            for agent in grouped_agents[section]:
+                if (agent.type == 'farmer'):
+                    # get section information where farmer is positioned
+                    farmer_section = model.G.nodes[agent.pos]["section"]
+                    if (model.available_water_per_section[str(farmer_section)] >= agent.amount_of_water_asked):
+                        if (agent.received_water_right == True):
+                            agent.amount_of_water_withdrawn = agent.amount_of_water_received
                             model.available_water_per_section[str(
                                 farmer_section)] -= agent.amount_of_water_received
-
-                # Calculate agent total yield based on water received
-                agent.total_profit = 10 * agent.amout_of_water_withdrawn / \
-                    (40*30*12) * agent.harvest_efficiency * \
-                    agent.crop_yield_per_ton
-            agent.life_time += 1  # Increase 1 year in water right lite time
+                        else:
+                            if (agent.p_to_override < model.override_threshold):
+                                agent.agent_performed_override = True
+                                agent.amount_of_water_withdrawn = agent.amount_of_water_asked
+                                model.available_water_per_section[str(
+                                    farmer_section)] -= agent.amount_of_water_received
+                                if model.verbose == True:
+                                    print("Agent {} have overriden manager's decision withdrawing {} m³/year.". format(
+                                        agent.unique_id, agent.amount_of_water_withdrawn))
+                    else:
+                        agent.agent_water_scarcity = True
+                        agent.amount_of_water_withdrawn = 0
+                    # Calculate agent total yield based on water received
+                    agent.total_revenue = 10 * agent.amount_of_water_withdrawn / \
+                        (40*30*12) * agent.harvest_efficiency * \
+                        agent.crop_yield_per_ton
+                agent.life_time += 1  # Increase 1 year in water right life time
+            if (section != list(grouped_agents.keys())[-1] ):
+                next_section = current_list_of_sections[current_list_of_sections.index(section)-len(current_list_of_sections)+1]
+                model.available_water_per_section[str(next_section)] += model.available_water_per_section[str(section)]
 
     def step(self):
         self.allocate_water_fcfs()
@@ -199,10 +208,11 @@ class IrrigationModel(Model):
     def __init__(
             self,
             linear_graph,
-            water_rights_gamma_fit,
-            available_water_per_section,
+            water_rights_parameters,
+            init_water_available_per_section,
             crops_info,
-            n_farmers_to_create_per_year):
+            n_farmers_to_create_per_year,
+            override_threshold):
         # self.schedule = StagedActivation(self)
         self.schedule = AgentTypeScheduler(
             IrrigationModel, [FarmerAgent, ManagerAgent])
@@ -212,7 +222,7 @@ class IrrigationModel(Model):
         
         Args:
             linear_graph: generated linear graph using networkx
-            water_rights_gamma_fit: water rights dataset to fit gamma distribution
+            water_rights_parameters: water rights dataset to fit a lognormal distribution
             available_water_per_section: dictionary containing amount of water available at each section
             crops_info: pandas DataFrame containing crops information (revenue, yield and cost)
             n_farmers_to_create_per_year: int number that represent the number of farmers to create per year
@@ -221,11 +231,14 @@ class IrrigationModel(Model):
         # Set parameters
         self.G = linear_graph
         self.grid = NetworkGrid(self.G)
-        self.water_rights_gamma_fit = water_rights_gamma_fit
+        self.water_rights_parameters = water_rights_parameters
         # what has been conceived by water agency
-        self.virtual_water_available_per_section = available_water_per_section
+        self.init_water_available_per_section = init_water_available_per_section
+        self.virtual_water_available_per_section = init_water_available_per_section
         # what is actually available in canal based on water withdrawal (counting water right overrides)
         self.available_water_per_section = available_water_per_section
+        self.init_water_available_per_section = self.allocate_all_water_to_section_one().copy()
+        self.override_threshold = override_threshold
 
         self.df_model_variables = pd.DataFrame(
             columns=['Step', 'Section', 'Water available', 'Virtual Water Available'])
@@ -261,17 +274,27 @@ class IrrigationModel(Model):
                     lambda x: x.amount_of_water_received if x.type == 'farmer' else None,
                 "Received water right":
                     lambda x: x.received_water_right if x.type == 'farmer' else None,
-                "Total profit (R$)":
-                    lambda x: x.total_profit if x.type == 'farmer' else None,
+                "Total revenue (R$)":
+                    lambda x: x.total_revenue if x.type == 'farmer' else None,
                 "Amount of water withdrawn (m³/year)":
-                    lambda x: x.amout_of_water_withdrawn if x.type == 'farmer' else None,
-            },
-            model_reporters={
-                "available_water_array": get_water_available_per_section,
-                "virtual_water_array": get_virtual_water_available_per_section,
+                    lambda x: x.amount_of_water_withdrawn if x.type == 'farmer' else None,
+                "Crop Choice":
+                    lambda x: x.cropChoice if x.type == 'farmer' else None,
             },
         )
         self.datacollector.collect(self)
+
+    def allocate_all_water_to_section_one(self):
+        init_water = self.init_water_available_per_section.copy()
+        # sum total water available in m³/year
+        total_water_available = sum(init_water.values())
+        actual_water_available = {}
+        for i in init_water:
+            if (i == '1'):
+                actual_water_available[i] = total_water_available
+            else:
+                actual_water_available[i] = 0
+        return actual_water_available
 
         # Create farmer agents and position them randomly
     def create_farmers_random_position(self):
@@ -312,10 +335,9 @@ class IrrigationModel(Model):
             self.crops_info_year.loc['Cost (R$/ton)']
         while (any(profit_info_year < 0)):
             calculate()
-            
+
     def reset_water_available_for_current_year(self):
-        print(self.virtual_water_available_per_section)
-        self.virtual_water_available_per_section = available_water_per_section
+        self.available_water_per_section = self.allocate_all_water_to_section_one().copy()
 
     def collect_model_attributes(self):
         for key in self.virtual_water_available_per_section:
@@ -332,16 +354,19 @@ class IrrigationModel(Model):
     def step(self):
         """ Execute the step of all the agents, one at a time. At the end advance model by one step """
         # Preparation
-        self.reset_water_available_for_current_year()
         self.create_farmers_random_position()
         self.fluctuate_market_for_the_year()
-        
+        if (model.schedule.steps == 0):
+            self.reset_water_available_for_current_year()
         # Run step
         self.schedule.step()
-        
+
         # Save model variables
         self.datacollector.collect(self)
         self.collect_model_attributes()
+        
+        # After step
+        self.reset_water_available_for_current_year()
 
     def run_model(self, step_count=3):
         for i in range(step_count):
@@ -351,42 +376,51 @@ class IrrigationModel(Model):
             self.step()
 
 
-"""DataCollector methods"""
-
-
-def get_water_available_per_section(model):
-    return model.available_water_per_section
-
-
-def get_virtual_water_available_per_section(model):
-    return model.virtual_water_available_per_section
-
-
 "Generate Linear Graph with NX"
 linear_graph = data_preparation.generate_edges_linear_graph(
-    number_of_sections=10, number_of_nodes=15)
+    number_of_sections=15, number_of_nodes=10000)
 
 "Initial conditions"
-available_water_per_section = {  # Sections water availability information
-    '1': 1000001,
-    '2': 1000002,
-    '3': 1000003,
-    '4': 1000004,
-    '5': 1000005,
-    '6': 1000006,
-    '7': 1000007,
-    '8': 1000008,
-    '9': 1000009,
-    '10': 1000010,
+# Values in m³/year
+available_water_per_section = {
+    '1': 764.5*4320,
+    '2': 808.1*4320,
+    '3': 752.4*4320,
+    '4': 825.1*4320,
+    '5': 784.2*4320,
+    '6': 680.0*4320,
+    '7': 646.7*4320,
+    '8': 569.9*4320,
+    '9': 518.3*4320,
+    '10': 435.9*4320,
+    '11': 377.8*4320,
+    '12': 344.2*4320,
+    '13': 265.9*4320,
+    '14': 261.8*4320,
+    '15': 305.0*4320,
 }
 
-"Read crops information"
+# Read crops information
 crops_info = pd.read_excel('crops_info.xlsx', index_col=0)
-n_farmers_to_create_per_year = 2
+#Number of farmers to create per year
+n_farmers_to_create_per_year = 101
+# number of steps to run
+number_of_steps = 20
+# Get parameters estimation to fit water rights requests
+water_rights_parameters = data_preparation.fit_water_rights()
+
+""""Override Threshold"""
+override_threshold = 0.1
+
 "Run model"
-water_rights_gamma_fit = data_preparation.read_water_rights()
-model = IrrigationModel(linear_graph, water_rights_gamma_fit,
-                        available_water_per_section, crops_info, n_farmers_to_create_per_year)
-model.run_model()
+model = IrrigationModel(linear_graph,
+                        water_rights_parameters,
+                        available_water_per_section,
+                        crops_info,
+                        n_farmers_to_create_per_year,
+                        override_threshold)
+model.run_model(step_count=number_of_steps)
+
+"Collect model variables"
 agents_results = model.datacollector.get_agent_vars_dataframe()
-model_results = model.datacollector.get_model_vars_dataframe()
+model_results = model.df_model_variables
