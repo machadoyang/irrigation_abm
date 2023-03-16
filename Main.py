@@ -19,7 +19,7 @@ import data_preparation
 
 
 class FarmerAgent(Agent):
-    """An agent that chooses a crop, asks for water and interact with water canal."""
+    """An agent that chooses a crop, asks for water and interact with the water canal."""
     _last_id = 0
 
     def __init__(self, model):
@@ -76,6 +76,7 @@ class FarmerAgent(Agent):
         self.area = monthly_amount_of_water_based_on_data/(40*30)
 
     def calculate_amount_of_water_to_ask(self):
+        """ Calculate the water volume to ask to manager based on farmer crop area """
         # Area times 40 m³/ha/day times 30 days and 12 months to get yearly value
         self.amount_of_water_asked = self.area*40*30*12
 
@@ -176,7 +177,7 @@ class ManagerAgent(Agent):
                                 agent.agent_performed_override = True
                                 agent.amount_of_water_withdrawn = agent.amount_of_water_asked
                                 model.available_water_per_section[str(
-                                    farmer_section)] -= agent.amount_of_water_received
+                                    farmer_section)] -= agent.amount_of_water_asked # AQUIIIIII!
                                 if model.verbose == True:
                                     print("Agent {} have overriden manager's decision withdrawing {} m³/year.". format(
                                         agent.unique_id, agent.amount_of_water_withdrawn))
@@ -382,22 +383,23 @@ linear_graph = data_preparation.generate_edges_linear_graph(
 
 "Initial conditions"
 # Values in m³/year
+water_restriction_coef = 0.6
 available_water_per_section = {
-    '1': 764.5*4320,
-    '2': 808.1*4320,
-    '3': 752.4*4320,
-    '4': 825.1*4320,
-    '5': 784.2*4320,
-    '6': 680.0*4320,
-    '7': 646.7*4320,
-    '8': 569.9*4320,
-    '9': 518.3*4320,
-    '10': 435.9*4320,
-    '11': 377.8*4320,
-    '12': 344.2*4320,
-    '13': 265.9*4320,
-    '14': 261.8*4320,
-    '15': 305.0*4320,
+    '1': 764.5*4320*water_restriction_coef,
+    '2': 808.1*4320*water_restriction_coef,
+    '3': 752.4*4320*water_restriction_coef,
+    '4': 825.1*4320*water_restriction_coef,
+    '5': 784.2*4320*water_restriction_coef,
+    '6': 680.0*4320*water_restriction_coef,
+    '7': 646.7*4320*water_restriction_coef,
+    '8': 569.9*4320*water_restriction_coef,
+    '9': 518.3*4320*water_restriction_coef,
+    '10': 435.9*4320*water_restriction_coef,
+    '11': 377.8*4320*water_restriction_coef,
+    '12': 344.2*4320*water_restriction_coef,
+    '13': 265.9*4320*water_restriction_coef,
+    '14': 261.8*4320*water_restriction_coef,
+    '15': 305.0*4320*water_restriction_coef,
 }
 
 # Read crops information

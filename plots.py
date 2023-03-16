@@ -98,14 +98,14 @@ def override_plot(agents_results):
     
     print(n_agents_overriden)
     print(n_agents_no_water)
-    plt.rcParams.update({'font.size': 16})
+    plt.rcParams.update({'font.size': 18})
     # Plot count number of agents overriden
     ax2.plot(n_agents_overriden.index,
             n_agents_overriden.values,
             color='red', alpha=0.6, label="Farmer override")
     
     # Plot count number of agents no water
-    ax2.set_ylim(0,200)
+    ax2.set_ylim(0,300)
     ax2.plot(n_agents_no_water.index,
             n_agents_no_water.values,
             color='black', alpha=0.6, label="Farmer deceived")   
@@ -138,11 +138,9 @@ def water_level_in_canal(model_results, init_water):
     # Iterate through sections and plot
     for k in range(number_of_subplots):
         results_current_step = model_results_multiindex.xs(k+1, level=1)/total_water_available*100
-        # print(k)
         # add every single subplot to the figure with a for loop
         ax = fig.add_subplot(rows, cols , position[k])
         ax.set_ylim(0,100)
-        print(k % number_of_subplots)
         if (k==14):
             print(results_current_step)
         if (k in list(range(number_of_subplots)[-3:])):
@@ -154,6 +152,7 @@ def water_level_in_canal(model_results, init_water):
                 print(k)
                 ax.set(ylabel='Water volume (%)')
         ax.plot(results_current_step.index, results_current_step['Water available'].values, color='blue')
+        
         
 def virtual_water_level_in_canal(model_results, init_water):
     
@@ -188,6 +187,49 @@ def virtual_water_level_in_canal(model_results, init_water):
                 print(k)
                 ax.set(ylabel='Virtual water (%)')
         ax.plot(results_current_step.index, results_current_step['Virtual Water Available'].values, color='black')
+        
+        
+def real_and_virtual_water_same_axis(model_results, init_water):
+    """ Real water"""
+    # Calculate total water volume available
+    total_water_available = sum(init_water.values())
+    
+    # Fill all zeros with previous section water availability
+    model_results['Water available'] = model_results['Water available'].replace(to_replace=0, method='ffill')
+    
+    # Convert Step column into int and apply multiindex to dataFrame
+    model_results['Section'] = model_results['Section'].astype(int)
+    model_results_multiindex = model_results.set_index(['Step', 'Section'])
+    
+    """Prepare plotting"""
+    number_of_subplots = int(model_results_multiindex.index.get_level_values(1).max())
+    cols = 3
+    rows = number_of_subplots // cols 
+    rows += number_of_subplots % cols
+    position = range(1, number_of_subplots + 1)
+    
+    fig = plt.figure(1, figsize=(16, 18))
+    plt.rcParams.update({'font.size': 14})
+    
+    """Iterate through sections and plot"""
+    for k in range(number_of_subplots):
+        results_current_step_real_water = model_results_multiindex.xs(k+1, level=1)/total_water_available*100
+        results_current_step_virtual_water = model_results_multiindex.xs(k+1, level=1)/init_water[str(k+1)]*100
+        
+        ax = fig.add_subplot(rows, cols , position[k])
+        ax.set_ylim(0,100)
+        
+        if (k in list(range(number_of_subplots)[-3:])):
+            ax.set(xlabel='Step')
+        if (k==0):
+            ax.set(ylabel='Water volume (%)')
+        else:
+            if ((k % cols) == 0 and k != 1):
+                print(k)
+                ax.set(ylabel='Water volume (%)')
+        
+        ax.plot(results_current_step_real_water.index, results_current_step_real_water['Water available'].values, color='blue')
+        ax.plot(results_current_step_virtual_water.index, results_current_step_virtual_water['Virtual Water Available'].values, color='black')
         
 
 def agents_position(agents_results):
